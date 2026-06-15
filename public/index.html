@@ -1,43 +1,994 @@
 <!DOCTYPE html>
+<!--
+  SOF SAFESOLO INTERNAL SECTION MAP — v193 maintenance cleanup
+  Purpose: make future targeted patches faster without changing app behavior.
+
+  CSS sections:
+    1. Base theme, layout, airport cards, wind/cloud visuals
+    2. Change Log, Settings, Map, Route Planner, Restrictions, Thresholds
+    3. Later-version override blocks retained for behavior compatibility
+
+  HTML sections:
+    1. Main app shell and displayed airport controls
+    2. Settings panel with Change Log, Restrictions, Thresholds, Displayed Airport Set Manager, Airport Manager, Test METAR Builder
+    3. Route Planner overlay, startup disclaimer, and shared information modal
+
+  JavaScript sections:
+    1. Airport data and airport catalog helpers
+    2. Storage, settings, restrictions, thresholds, and Change Log
+    3. Weather cache, queue, METAR fetching, TAF logic, MOS/LAMP fallback logic
+    4. Airport card rendering, map rendering, Route Planner, settings editors, event wiring
+-->
 <html lang="en">
-
 <head>
-	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-	<meta name="theme-color" content="#000000">
-	<!--
-      manifest.json provides metadata used when your web app is added to the
-      homescreen on Android. See https://developers.google.com/web/fundamentals/engage-and-retain/web-app-manifest/
-    -->
-	<link rel="manifest" href="%PUBLIC_URL%/manifest.json">
-	<link rel="shortcut icon" href="%PUBLIC_URL%/favicon.ico">
-	<!--
-      Notice the use of %PUBLIC_URL% in the tags above.
-      It will be replaced with the URL of the `public` folder during the build.
-      Only files inside the `public` folder can be referenced from the HTML.
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#07111f" />
+  <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+  <link rel="shortcut icon" href="%PUBLIC_URL%/favicon.ico" />
+  <title>SOF SafeFlight Advisor</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --panel: rgba(12, 25, 44, 0.94);
+      --panel2: rgba(19, 37, 63, 0.94);
+      --text: #ecf3ff;
+      --muted: #9fb2c8;
+      --line: rgba(255,255,255,0.13);
+      --gold: #f1bc2d;
+      --green: #53bf45;
+      --red: #ff6b6b;
+      --shadow: 0 22px 60px rgba(0,0,0,0.44);
+      --radius: 22px;
+    }
 
-      Unlike "/favicon.ico" or "favicon.ico", "%PUBLIC_URL%/favicon.ico" will
-      work correctly both with client-side routing and a non-root public URL.
-      Learn how to configure a non-root public URL by running `npm run build`.
-    -->
-	<title>React App</title>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 50% 0%, rgba(12, 55, 112, 0.24), transparent 35%),
+        radial-gradient(circle at 12% 10%, rgba(88,166,255,0.18), transparent 28%),
+        radial-gradient(circle at 88% 5%, rgba(245,200,76,0.17), transparent 30%),
+        linear-gradient(180deg, #02070f 0%, #04111d 45%, #020912 100%);
+    }
+    button, input, select, textarea { font: inherit; }
+    .app { width: min(1380px, 100%); margin: 0 auto; padding: 18px; }
+    .topbar, .control-panel, .front-starter-controls, .settings, .card, .map-panel, .disclaimer-modal {
+      border: 1px solid rgba(104,133,181,.30);
+      background: linear-gradient(180deg, rgba(5,14,28,.94), rgba(3,10,20,.94));
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+    .topbar { padding: 14px 18px; border-radius: 24px; margin-bottom: 16px; }
+    h1 { margin: 0; color: var(--gold); font-size: clamp(1.45rem, 3vw, 2.4rem); line-height: 1.05; letter-spacing: -0.04em; }
+    .app-version-badge {
+      display: inline-flex;
+      margin-left: 12px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(245,200,76,.42);
+      background: rgba(245,200,76,.12);
+      color: var(--gold);
+      font-size: .46em;
+      font-weight: 950;
+      vertical-align: middle;
+    }
+    .subtitle { margin: 7px 0 0; color: var(--muted); }
+    .control-panel {
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) repeat(2, 136px);
+      gap: 10px;
+      padding: 14px;
+      border-radius: var(--radius);
+      margin-bottom: 16px;
+    }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    label { color: var(--muted); font-size: .78rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+    select, input, textarea {
+      width: 100%;
+      min-height: 44px;
+      color: var(--text);
+      background: rgba(255,255,255,.08);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px 12px;
+      outline: none;
+    }
+    select option, select optgroup { color: #111827; }
+    .btn {
+      min-height: 44px;
+      padding: 10px 14px;
+      border: 1px solid rgba(255,255,255,.16);
+      border-radius: 14px;
+      color: var(--text);
+      background: rgba(255,255,255,.10);
+      cursor: pointer;
+      align-self: end;
+      white-space: nowrap;
+      transition: transform .15s ease, background .15s ease;
+    }
+    .btn:hover { transform: translateY(-1px); background: rgba(255,255,255,.16); }
+    .btn.primary { color: #111827; background: linear-gradient(180deg, #f9d66a, #d69b27); font-weight: 900; }
+    .btn.good { background: rgba(94,224,122,.15); border-color: rgba(94,224,122,.32); }
+    .btn.danger { background: rgba(255,107,107,.13); border-color: rgba(255,107,107,.28); }
+    .btn.small { min-height: 32px; padding: 6px 9px; border-radius: 10px; font-size: .85rem; align-self: initial; }
+    .front-filter-row { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(360px, 520px); gap: 12px; align-items: end; margin-bottom: 14px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+    .tab {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 11px;
+      background: rgba(255,255,255,.06);
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 800;
+    }
+    .tab.active { color: var(--gold); border-color: rgba(245,200,76,.42); background: rgba(245,200,76,.16); }
+    .front-starter-controls { display: grid; gap: 6px; padding: 10px; border-radius: 18px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(390px, 1fr)); gap: 18px; align-items: start; }
+    .card {
+      overflow: hidden;
+      position: relative;
+      border-radius: 26px;
+      background: linear-gradient(180deg, #f4ead3, #eadbb9);
+      color: #241b10;
+      border-color: rgba(125,93,44,.32);
+    }
+    .card-header { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 18px; }
+    .icao-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .icao { font-size: clamp(2.3rem, 4vw, 3.4rem); font-weight: 950; letter-spacing: .02em; }
+    .airport-name { color: #5f4d31; margin-top: 8px; }
+    .cat { padding: 12px 24px; border-radius: 20px; color: #07111f; font-weight: 950; letter-spacing: .02em; }
+    .cat.VFR { color: #efffec; background: linear-gradient(180deg, #49a835, #2d7f25); }
+    .cat.MVFR { color: #fff; background: linear-gradient(180deg, #4786ff, #2a5fd0); }
+    .cat.IFR { color: #fff; background: linear-gradient(180deg, #ff4d4d, #b91c1c); }
+    .cat.LIFR { color: #fff; background: linear-gradient(180deg, #d46aff, #8b2fb0); }
+    .star {
+      width: 52px;
+      height: 52px;
+      border-radius: 18px;
+      border: 1px solid rgba(125,93,44,.24);
+      background: rgba(255,249,233,.84);
+      color: #b87a14;
+      font-size: 1.9rem;
+      cursor: pointer;
+    }
+    .card-body { padding: 0 18px 18px; }
+    .panel-box, .datum, .raw {
+      border: 1px solid rgba(104,133,181,.28);
+      border-radius: 20px;
+      background: linear-gradient(180deg, rgba(5,14,28,.92), rgba(4,12,24,.9));
+      color: var(--text);
+    }
+    .visuals { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+    .panel-box { padding: 12px 14px 14px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .panel-title { color: var(--gold); font-size: 1.1rem; font-weight: 900; }
+    .compass {
+      position: relative;
+      width: min(190px, 100%);
+      aspect-ratio: 1 / 1;
+      margin: 0 auto 12px;
+      border: 2px solid rgba(255,255,255,.22);
+      border-radius: 50%;
+      overflow: hidden;
+      background: radial-gradient(circle, rgba(88,166,255,.12), rgba(255,255,255,.04) 52%, rgba(0,0,0,.18));
+    }
+    .dir-label { position: absolute; color: var(--muted); font-weight: 900; }
+    .n { top: 7px; left: 50%; transform: translateX(-50%); }
+    .e { right: 9px; top: 50%; transform: translateY(-50%); }
+    .s { bottom: 7px; left: 50%; transform: translateX(-50%); }
+    .w { left: 9px; top: 50%; transform: translateY(-50%); }
+    .arrow {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 46%;
+      height: 18%;
+      transform-origin: 100% 50%;
+      transform: translate(-100%, -50%) rotate(var(--rot, -90deg));
+      background: linear-gradient(90deg, var(--wind-arrow-color, #f59f19), var(--wind-arrow-color, #ffd85b));
+      clip-path: polygon(0 34%, 63% 34%, 63% 10%, 100% 50%, 63% 90%, 63% 66%, 0 66%);
+      filter: drop-shadow(0 0 8px rgba(255,186,34,.46));
+    }
+    .wind-text { color: var(--gold); text-align: center; font-size: 1.45rem; font-weight: 900; }
+    .crosswind-text { color: var(--muted); text-align: center; font-size: .88rem; font-weight: 850; }
+    .cloud-stack { min-height: 190px; display: grid; align-content: start; }
+    .cloud-layer { display: grid; grid-template-columns: 58px 1fr; gap: 12px; align-items: center; padding: 13px 8px; border-top: 1px solid rgba(255,255,255,.08); }
+    .cloud-layer:first-child { border-top: none; }
+    .cloud-icon { display: grid; place-items: center; width: 50px; height: 32px; border-radius: 999px; color: #06101f; background: #f4f8ff; font-weight: 950; }
+    .data-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
+    .datum { min-height: 72px; padding: 9px 11px; }
+    .datum .label { color: #d6a430; font-size: .76rem; font-weight: 700; }
+    .datum .value { margin-top: 7px; color: #eef4ff; font-size: 1.03rem; font-weight: 850; }
+    .datum.warning { border-color: rgba(255,107,107,.7); background: linear-gradient(180deg, rgba(67,18,18,.96), rgba(34,11,13,.96)); }
+    .wind-warning {
+      grid-column: 1 / -1;
+      margin-top: 12px;
+      border: 2px solid rgba(255,46,46,.98);
+      background: linear-gradient(135deg, rgba(155,12,12,.96), rgba(64,6,6,.94));
+      color: #fff4f4;
+      border-radius: 20px;
+      padding: 12px 14px;
+    }
+    .wind-warning-title { font-weight: 950; margin-bottom: 6px; }
+    details.raw { margin-top: 8px; overflow: hidden; }
+    details.raw summary { color: var(--gold); cursor: pointer; font-weight: 900; padding: 14px 16px; }
+    .raw-text-block {
+      margin: 0;
+      padding: 0 16px 18px;
+      color: #dbe5f5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: .92rem;
+    }
+    .settings-backdrop, .map-overlay, .disclaimer-backdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(0,0,0,.66);
+      backdrop-filter: blur(4px);
+      z-index: 120;
+    }
+    .settings-backdrop.open, .map-overlay.open, .disclaimer-backdrop.open { display: flex; }
+    .settings { width: min(1320px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; border-radius: 24px; padding: 18px; }
+    .settings-header, .map-head { display: flex; justify-content: space-between; align-items: start; gap: 16px; margin-bottom: 14px; }
+    .settings-title, .builder-title, .map-head h2 { color: var(--gold); font-size: 1.18rem; font-weight: 950; margin: 0; }
+    .builder-subtitle, .settings-subtitle, .map-head p { color: var(--muted); margin-top: 3px; }
+    .settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .settings-card { grid-column: 1 / -1; margin-top: 14px; border: 1px solid rgba(104,133,181,.28); border-radius: 18px; padding: 14px; background: rgba(255,255,255,.035); }
+    .change-list { display: grid; gap: 8px; max-height: 260px; overflow: auto; }
+    .change-row { border: 1px solid rgba(104,133,181,.22); border-radius: 14px; background: rgba(8,18,33,.55); padding: 10px 12px; }
+    .change-stamp { color: var(--gold); font-size: .78rem; font-weight: 900; margin-bottom: 4px; }
+    .map-panel { width: min(1900px, calc(100vw - 8px)); height: min(900px, calc(100vh - 8px)); border-radius: 24px; overflow: hidden; display: grid; grid-template-rows: auto 1fr; }
+    .solo-layout { display: grid; grid-template-columns: minmax(360px, 490px) 1fr; min-height: 0; }
+    .solo-sidebar { padding: 14px; overflow: auto; border-right: 1px solid rgba(104,133,181,.28); }
+    .solo-map { position: relative; min-height: 100%; background: #06101f; overflow: hidden; }
+    .map-dot {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 42px;
+      min-height: 24px;
+      border-radius: 999px;
+      border: 1px solid rgba(148,179,230,.78);
+      background: rgba(13,35,63,.96);
+      color: #e8f1ff;
+      font-size: .68rem;
+      font-weight: 950;
+      padding: 3px 7px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.45);
+    }
+    .map-dot.route { background: var(--gold); color: #1a1200; border-color: #fff1bf; }
+    .route-line { position: absolute; height: 3px; background: #ff6bc5; transform-origin: 0 50%; box-shadow: 0 0 8px rgba(255,107,197,.9); }
+    .solo-mode-toggle { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0 0 18px; }
+    .solo-mode-btn.active { color: #1a1200; background: linear-gradient(180deg, rgba(245,200,76,.98), rgba(202,148,21,.98)); }
+    .solo-route-grid { display: grid; gap: 10px; margin: 12px 0; }
+    .solo-route-row { display: grid; grid-template-columns: 82px 1fr 1fr; gap: 8px; align-items: end; }
+    .solo-status-list { display: grid; gap: 10px; padding: 0; list-style: none; }
+    .solo-status-item { border: 1px solid rgba(104,133,181,.26); border-radius: 14px; background: rgba(10,22,39,.92); padding: 10px 12px; }
+    .solo-status-item.bad { border-color: rgba(222,91,91,.42); background: rgba(55,18,18,.8); }
+    .disclaimer-backdrop { z-index: 220; }
+    .disclaimer-modal { width: min(720px, calc(100vw - 32px)); border-radius: 24px; overflow: auto; border-color: rgba(245,200,76,.34); }
+    .disclaimer-header { padding: 18px 20px 12px; border-bottom: 1px solid rgba(104,133,181,.28); }
+    .disclaimer-header h2 { margin: 0; color: var(--gold); font-size: 1.32rem; }
+    .disclaimer-body { padding: 16px 20px 20px; line-height: 1.5; }
+    .disclaimer-alert { margin: 14px 0; padding: 13px 14px; border-radius: 16px; border: 1px solid rgba(255,107,107,.42); background: rgba(82,18,18,.55); color: #ffe3e3; font-weight: 850; }
+    .disclaimer-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+    .toast {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      display: none;
+      max-width: min(520px, calc(100vw - 32px));
+      padding: 13px 15px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(10,20,37,.96);
+      box-shadow: var(--shadow);
+      z-index: 300;
+    }
+    .toast.show { display: block; }
+    @media (max-width: 980px) {
+      .front-filter-row, .solo-layout, .settings-grid { grid-template-columns: 1fr; }
+      .control-panel { grid-template-columns: 1fr; }
+      .visuals, .data-grid { grid-template-columns: 1fr; }
+      .cards { grid-template-columns: 1fr; }
+      .solo-sidebar { border-right: none; border-bottom: 1px solid rgba(104,133,181,.28); max-height: 46vh; }
+    }
+  </style>
 </head>
-
 <body>
-	<noscript>
-		You need to enable JavaScript to run this app.
-	</noscript>
-	<div id="root"></div>
-	<!--
-      This HTML file is a template.
-      If you open it directly in the browser, you will see an empty page.
+  <main class="app">
+    <section class="topbar">
+      <h1 id="boardTitleDisplay"><span id="boardTitleText">SOF SafeFlight Advisor</span><span class="app-version-badge">v262</span></h1>
+      <p class="subtitle">For Supervisor Of Flight Weather Awareness.</p>
+    </section>
 
-      You can add webfonts, meta tags, or analytics to this file.
-      The build step will place the bundled scripts into the <body> tag.
+    <section class="control-panel">
+      <div class="field">
+        <label for="airportSelect">Add Airport</label>
+        <select id="airportSelect"></select>
+      </div>
+      <button class="btn" id="settingsBtn">Settings</button>
+      <button class="btn" id="soloBtn">Route Advisor</button>
+    </section>
 
-      To begin the development, run `npm start` or `yarn start`.
-      To create a production bundle, use `npm run build` or `yarn build`.
-    -->
+    <div class="front-filter-row">
+      <div class="tabs" id="stateTabs"></div>
+      <div class="front-starter-controls">
+        <label for="initialSet">Displayed Airports</label>
+        <select id="initialSet">
+          <optgroup label="Favorites">
+            <option value="favorites">Favorites</option>
+          </optgroup>
+          <optgroup label="Built-in">
+            <option value="mesa">Mesa Local Airports</option>
+            <option value="practice">SE and SW Practice Areas</option>
+            <option value="az">Arizona Approved Airports</option>
+          </optgroup>
+        </select>
+      </div>
+    </div>
+
+    <section class="cards" id="cards"></section>
+  </main>
+
+  <div class="settings-backdrop" id="settingsBackdrop">
+    <section class="settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="settings-header">
+        <div>
+          <div class="settings-title" id="settingsTitle">Settings</div>
+          <div class="settings-subtitle">Adjust the board title, layout, changes, restrictions, thresholds, displayed airport sets, airport list, and Test METAR input.</div>
+        </div>
+        <button class="btn danger" id="closeSettingsBtn" type="button">Close</button>
+      </div>
+
+      <div class="settings-grid">
+        <div class="field">
+          <label for="boardTitleInput">Top Name</label>
+          <input id="boardTitleInput" type="text" />
+        </div>
+        <div class="field">
+          <label for="autoRefresh">Weather Auto Refresh</label>
+          <select id="autoRefresh">
+            <option value="0">Off</option>
+            <option value="300000">Every 5 Minutes</option>
+            <option value="900000">Every 15 Minutes</option>
+            <option value="1800000">Every 30 Minutes</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="cardColumns">Airport Cards Per Row</label>
+          <select id="cardColumns">
+            <option value="3">3 Cards</option>
+            <option value="4">4 Cards</option>
+            <option value="5">5 Cards</option>
+          </select>
+        </div>
+
+        <section class="settings-card">
+          <div class="builder-title">Changes</div>
+          <div class="builder-subtitle">Newest items appear at the top.</div>
+          <div class="change-list" id="changeList"></div>
+        </section>
+
+        <section class="settings-card">
+          <div class="builder-title">Restrictions</div>
+          <div class="builder-subtitle">Restriction notes are shown on airport cards and route checks.</div>
+          <textarea id="restrictionNotes" rows="5"></textarea>
+        </section>
+
+        <section class="settings-card">
+          <div class="builder-title">Thresholds</div>
+          <div class="builder-subtitle">Set Route Advisor wind limits and card warning defaults.</div>
+          <div class="settings-grid">
+            <div class="field"><label for="defaultTotalLimit">Total Wind kt</label><input id="defaultTotalLimit" type="number" min="0" step="1" /></div>
+            <div class="field"><label for="defaultCrossLimit">Crosswind kt</label><input id="defaultCrossLimit" type="number" min="0" step="1" /></div>
+            <div class="field"><label for="hotTempLimit">Hot Temp °C</label><input id="hotTempLimit" type="number" step="1" /></div>
+          </div>
+        </section>
+
+        <section class="settings-card">
+          <div class="builder-title">Test METAR Builder</div>
+          <div class="builder-subtitle">Apply local test data to the selected airport card.</div>
+          <div class="settings-grid">
+            <div class="field"><label for="testAirportId">Airport</label><select id="testAirportId"></select></div>
+            <div class="field"><label for="testWindDir">Wind Direction</label><input id="testWindDir" type="number" min="0" max="360" step="10" value="240" /></div>
+            <div class="field"><label for="testWindSpeed">Wind Speed kt</label><input id="testWindSpeed" type="number" min="0" step="1" value="12" /></div>
+            <div class="field"><label for="testWindGust">Gust kt</label><input id="testWindGust" type="number" min="0" step="1" value="18" /></div>
+            <div class="field"><label for="testVisibility">Visibility SM</label><input id="testVisibility" type="number" min="0" step=".25" value="10" /></div>
+            <div class="field"><label for="testTemp">Temperature °C</label><input id="testTemp" type="number" step="1" value="41" /></div>
+            <div class="field"><label for="testCeiling">Ceiling ft AGL</label><input id="testCeiling" type="number" step="100" value="5000" /></div>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn good" id="applyTestDataBtn" type="button">Apply Test Data</button>
+            <button class="btn danger" id="clearTestDataBtn" type="button">Clear Test Data</button>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <section class="map-overlay" id="soloOverlay" aria-hidden="true">
+    <div class="map-panel">
+      <div class="map-head" style="padding:14px 16px;border-bottom:1px solid rgba(104,133,181,.28);margin:0">
+        <div>
+          <h2>Route Advisor</h2>
+          <p>Set your total wind and crosswind limits, then plot a route.</p>
+        </div>
+        <button class="btn danger" id="closeSoloBtn" type="button">Close</button>
+      </div>
+      <div class="solo-layout">
+        <div class="solo-sidebar">
+          <div class="builder-title">Flight Type</div>
+          <div class="solo-mode-toggle">
+            <button class="btn solo-mode-btn active" type="button" data-mode="solo">Student Pilot Solo</button>
+            <button class="btn solo-mode-btn" type="button" data-mode="studentSolo">Student Solo</button>
+            <button class="btn solo-mode-btn" type="button" data-mode="dual">Dual</button>
+          </div>
+          <div class="settings-grid" style="grid-template-columns:1fr 1fr;margin-bottom:12px">
+            <div class="field"><label for="soloTotalLimit">Total Limit</label><input id="soloTotalLimit" type="number" min="0" step="1" /></div>
+            <div class="field"><label for="soloCrosswindLimit">Crosswind Limit</label><input id="soloCrosswindLimit" type="number" min="0" step="1" /></div>
+          </div>
+          <div class="solo-route-grid">
+            <div class="solo-route-row">
+              <div style="font-weight:900;color:#fff1bf">Dep.</div>
+              <div class="field"><label for="soloDep">Airport</label><input id="soloDep" maxlength="6" placeholder="KIWA" /></div>
+              <div class="field"><label for="soloDepTime">Dep. Time</label><input id="soloDepTime" maxlength="5" placeholder="HH:MM" /></div>
+            </div>
+            <div class="solo-route-row">
+              <div style="font-weight:900;color:#fff1bf">Leg</div>
+              <div class="field"><label for="soloLeg">Airport</label><input id="soloLeg" maxlength="6" placeholder="A39" /></div>
+              <div class="field"><label for="soloLegTime">Arr. Time</label><input id="soloLegTime" maxlength="5" placeholder="HH:MM" /></div>
+            </div>
+            <div class="solo-route-row">
+              <div style="font-weight:900;color:#fff1bf">Arr.</div>
+              <div class="field"><label for="soloArr">Airport</label><input id="soloArr" maxlength="6" placeholder="KCGZ" /></div>
+              <div class="field"><label for="soloArrTime">Arr. Time</label><input id="soloArrTime" maxlength="5" placeholder="HH:MM" /></div>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
+            <button class="btn good small" id="updateSoloBtn" type="button">Update Data</button>
+            <button class="btn danger small" id="clearSoloBtn" type="button">Clear All</button>
+          </div>
+          <div class="builder-title">Route Status</div>
+          <ul class="solo-status-list" id="soloStatusList"></ul>
+        </div>
+        <div class="solo-map" id="soloMap"></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="disclaimer-backdrop open" id="startupDisclaimer" role="dialog" aria-modal="true" aria-labelledby="startupDisclaimerTitle">
+    <section class="disclaimer-modal">
+      <div class="disclaimer-header">
+        <h2 id="startupDisclaimerTitle">Important Route Planner Disclaimer</h2>
+      </div>
+      <div class="disclaimer-body">
+        <p><strong>This application is an aid for Supervisors of Flight (SOF)</strong> to help double-check a Solo Plan and identify items that may need additional review.</p>
+        <p>It is <strong>not</strong> a weather planning tool, weather briefing system, dispatch release system, or substitute for approved aviation weather sources.</p>
+        <div class="disclaimer-alert">The responsibility for weather planning, go/no-go decision making, and determining whether the flight can be conducted safely remains solely with the student pilot and the CFI who signed the student off.</div>
+        <p>The SOF should use this only as a supplemental cross-check. Always verify weather, forecasts, restrictions, NOTAMs, aircraft limitations, route suitability, and applicable school/FAA requirements using approved sources and procedures.</p>
+        <div class="disclaimer-actions">
+          <button class="btn primary" id="closeStartupDisclaimerBtn" type="button">I Understand</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const APP_VERSION = 'v262';
+    const STORAGE = {
+      selected: 'swawb.approved8_6.selected',
+      favorites: 'swawb.approved8_6.favorites',
+      settings: 'swawb.approved8_6.settings.v8_multi_source_metar',
+      changeLog: 'swawb.approved8_6.change_log.v1',
+      testMetars: 'swawb.approved8_6.test_metars.v1',
+      tafs: 'swawb.approved8_6.taf_cache.v1'
+    };
+    const DEFAULT_AIRPORTS = [
+      { id:'KIWA', name:'Phoenix-Mesa Gateway', city:'Mesa', state:'AZ', elev:1382, runways:[12,30], lat:33.3078, lon:-111.6555, notes:'' },
+      { id:'A39', name:'Ak-Chin Regional', city:'Maricopa', state:'AZ', elev:1300, runways:[4,22], lat:32.9908, lon:-111.9185, notes:'' },
+      { id:'P08', name:'Coolidge Municipal', city:'Coolidge', state:'AZ', elev:1574, runways:[5,23], lat:32.9359, lon:-111.4270, notes:'' },
+      { id:'KCGZ', name:'Casa Grande Municipal', city:'Casa Grande', state:'AZ', elev:1464, runways:[5,23], lat:32.9549, lon:-111.7668, notes:'Dual Only; No 110/112' },
+      { id:'KCHD', name:'Chandler Municipal', city:'Chandler', state:'AZ', elev:1243, runways:[4,22], lat:33.2691, lon:-111.8111, notes:'' },
+      { id:'KFFZ', name:'Falcon Field', city:'Mesa', state:'AZ', elev:1394, runways:[4,22], lat:33.4608, lon:-111.7283, notes:'' },
+      { id:'KPHX', name:'Phoenix Sky Harbor', city:'Phoenix', state:'AZ', elev:1135, runways:[7,8,25,26], lat:33.4342, lon:-112.0116, notes:'' },
+      { id:'KSDL', name:'Scottsdale Airport', city:'Scottsdale', state:'AZ', elev:1510, runways:[3,21], lat:33.6229, lon:-111.9105, notes:'' },
+      { id:'KDVT', name:'Phoenix Deer Valley', city:'Phoenix', state:'AZ', elev:1478, runways:[7,25], lat:33.6883, lon:-112.0826, notes:'' },
+      { id:'KAVQ', name:'Marana Regional', city:'Marana', state:'AZ', elev:2031, runways:[12,30], lat:32.4096, lon:-111.2184, notes:'' },
+      { id:'KRYN', name:'Ryan Field', city:'Tucson', state:'AZ', elev:2417, runways:[6,15,24,33], lat:32.1422, lon:-111.1746, notes:'' },
+      { id:'KTUS', name:'Tucson International', city:'Tucson', state:'AZ', elev:2643, runways:[3,11,21,29], lat:32.1161, lon:-110.9410, notes:'' },
+      { id:'KFLG', name:'Flagstaff Pulliam', city:'Flagstaff', state:'AZ', elev:7014, runways:[3,21], lat:35.1385, lon:-111.6713, notes:'Dual Only; No Night Flight; High Elevation' },
+      { id:'KPRC', name:'Prescott Regional', city:'Prescott', state:'AZ', elev:5045, runways:[3,12,21,30], lat:34.6545, lon:-112.4196, notes:'Dual Only; No Night Flight; High Elevation' },
+      { id:'KPAN', name:'Payson Airport', city:'Payson', state:'AZ', elev:5157, runways:[6,24], lat:34.2568, lon:-111.3393, notes:'Dual Only; No Night Flight; High Elevation' }
+    ];
+    const SAMPLE_METARS = {
+      KIWA:{ wdir:240, wspd:11, wgst:18, visib:10, temp:31, dewp:5, altim:29.88, clouds:[{cover:'FEW',base:5000},{cover:'BKN',base:8500}], raw:'KIWA 291747Z 24011G18KT 10SM FEW050 BKN085 31/05 A2988 RMK AO2' },
+      A39:{ wdir:230, wspd:9, wgst:null, visib:10, temp:32, dewp:6, altim:29.89, clouds:[{cover:'CLR',base:null}], raw:'KA39 291747Z 23009KT 10SM CLR 32/06 A2989 RMK SAMPLE DATA' },
+      P08:{ wdir:220, wspd:12, wgst:20, visib:10, temp:34, dewp:7, altim:29.87, clouds:[{cover:'SCT',base:9000}], raw:'KP08 291747Z 22012G20KT 10SM SCT090 34/07 A2987 RMK SAMPLE DATA' },
+      KCGZ:{ wdir:250, wspd:14, wgst:22, visib:10, temp:33, dewp:4, altim:29.90, clouds:[{cover:'FEW',base:6000}], raw:'KCGZ 291747Z 25014G22KT 10SM FEW060 33/04 A2990 RMK SAMPLE DATA' }
+    };
+    const DEFAULT_CHANGELOG = [
+      { id:'v262-remove-test-metar-on-off-toggle', ts:'2026-05-28T22:25:00Z', summary:'Removed the Settings Test METAR Builder On/Off toggle; the builder and Apply Test Data are always available again, and test METAR overrides behave as before.' },
+      { id:'v262-top-subtitle-sof-awareness', ts:'2026-05-28T22:10:00Z', summary:'Updated the main top-page subtitle to read For Supervisor Of Flight Weather Awareness.' },
+      { id:'v262-see-data-pull-toggle', ts:'2026-05-28T22:00:00Z', summary:'Added a top-right See Data Pull / Hide Data Pull button that turns the Raw Weather Sources panel and raw weather logging on or off, with the choice saved in Settings.' },
+      { id:'v261-remove-inner-wind-limit-outline', ts:'2026-05-27T18:00:00Z', summary:'Removed the inner red/yellow wind-limit outline from the airport-card body while preserving wind-limit card border highlighting and warning boxes.' },
+      { id:'v260-student-pilot-solo-card-wind-warning', ts:'2026-05-28T00:00:00Z', summary:'Added airport-card student pilot solo warnings when wind is over 15 kt total or selected-runway crosswind is over 10 kt.' }
+    ];
+    const $ = id => document.getElementById(id);
+    const load = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
+    const save = (key, value) => localStorage.setItem(key, JSON.stringify(value));
+    const cleanId = value => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const publicAirportId = value => {
+      const raw = cleanId(value);
+      if (/^K[A-Z0-9]{3}$/.test(raw) && /[A-Z]/.test(raw.slice(1)) && /\d/.test(raw.slice(1))) return raw.slice(1);
+      return raw;
+    };
+    const airport = id => DEFAULT_AIRPORTS.find(a => a.id === publicAirportId(id) || a.id === cleanId(id)) || null;
+    const escapeHtml = value => String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    let settings = Object.assign({
+      boardTitle:'SOF SafeFlight Advisor',
+      autoRefresh:'300000',
+      cardColumns:'3',
+      defaultTotalLimit:5,
+      defaultCrossLimit:5,
+      hotTempLimit:40,
+      restrictionNotes:'Dual Only; No Night Flight; No 110/112; High Elevation'
+    }, load(STORAGE.settings, {}));
+    let selected = load(STORAGE.selected, ['KIWA']);
+    let favorites = load(STORAGE.favorites, ['KIWA']);
+    let testMetars = load(STORAGE.testMetars, {});
+    let tafs = load(STORAGE.tafs, {});
+    let tafFetchPromise = null;
+    let tafFetchState = { state: Object.keys(tafs || {}).length ? 'cached' : 'idle', message: Object.keys(tafs || {}).length ? 'Cached TAF loaded' : 'TAF not loaded yet' };
+    const TAF_BULK_URL = 'https://aviationweather.gov/data/cache/tafs.cache.xml.gz';
+    const TAF_PROXY_URL = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(TAF_BULK_URL)}`;
+    const TAF_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+    function toast(message) {
+      const node = $('toast');
+      node.textContent = message;
+      node.classList.add('show');
+      clearTimeout(toast.timer);
+      toast.timer = setTimeout(() => node.classList.remove('show'), 5000);
+    }
+    function metarFor(id) {
+      const clean = airport(id)?.id || publicAirportId(id);
+      return testMetars[clean] || SAMPLE_METARS[clean] || makeSyntheticMetar(clean);
+    }
+    function weatherSourceStationId(id) {
+      const publicId = publicAirportId(id);
+      return /^[A-Z0-9]{3}$/.test(publicId) && /[A-Z]/.test(publicId) && /\d/.test(publicId) ? `K${publicId}` : publicId;
+    }
+    function tafFor(id) {
+      const ap = airport(id);
+      const candidates = [
+        ap?.id,
+        weatherSourceStationId(ap?.id || id),
+        publicAirportId(ap?.id || id),
+        cleanId(id)
+      ].filter(Boolean);
+      for (const candidate of candidates) {
+        if (tafs[candidate]) return tafs[candidate];
+      }
+      return null;
+    }
+    function tafSummaryFor(id) {
+      const taf = tafFor(id);
+      if (taf) {
+        const when = taf.fetchedAt ? new Date(taf.fetchedAt).toLocaleString([], { hour:'2-digit', minute:'2-digit', hour12:false, month:'short', day:'numeric' }) : 'cached';
+        return `Raw TAF · ${when}`;
+      }
+      if (tafFetchState.state === 'updating') return 'Raw TAF · Updating from AviationWeather';
+      if (tafFetchState.state === 'failed') return 'Raw TAF · Unavailable';
+      return 'Raw TAF · Not loaded yet';
+    }
+    function directXmlChildText(node, childName) {
+      const wanted = String(childName || '').toLowerCase();
+      for (const child of Array.from(node?.children || [])) {
+        if (String(child.localName || child.nodeName || '').toLowerCase() === wanted) {
+          return String(child.textContent || '').trim();
+        }
+      }
+      return '';
+    }
+    async function decodeTafResponse(response) {
+      const buffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const isGzip = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+      if (isGzip) {
+        if (typeof DecompressionStream !== 'function') {
+          throw new Error('This browser cannot decompress the AviationWeather TAF gzip cache.');
+        }
+        const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'));
+        return new Response(stream).text();
+      }
+      const text = new TextDecoder('utf-8').decode(buffer);
+      try {
+        const json = JSON.parse(text);
+        const possible = json.contents || json.content || json.body || json.data;
+        if (typeof possible === 'string') return possible;
+      } catch {}
+      return text;
+    }
+    function parseBulkTafXml(xmlText) {
+      const doc = new DOMParser().parseFromString(String(xmlText || ''), 'application/xml');
+      if (doc.getElementsByTagName('parsererror').length) {
+        throw new Error('AviationWeather bulk TAF XML could not be parsed.');
+      }
+      const rows = Array.from(doc.getElementsByTagName('*')).filter(node => String(node.localName || node.nodeName || '').toUpperCase() === 'TAF');
+      const next = {};
+      rows.forEach(node => {
+        const station = cleanId(directXmlChildText(node, 'station_id'));
+        const raw = directXmlChildText(node, 'raw_text');
+        if (!station || !raw) return;
+        next[station] = {
+          station,
+          raw,
+          issueTime: directXmlChildText(node, 'issue_time'),
+          validFrom: directXmlChildText(node, 'valid_time_from'),
+          validTo: directXmlChildText(node, 'valid_time_to'),
+          source: TAF_BULK_URL,
+          fetchedAt: new Date().toISOString()
+        };
+      });
+      if (!Object.keys(next).length) throw new Error('AviationWeather bulk TAF XML did not contain any TAF records.');
+      return next;
+    }
+    async function updateTafs(force = false) {
+      const newestCached = Math.max(0, ...Object.values(tafs || {}).map(item => Date.parse(item.fetchedAt || 0) || 0));
+      if (!force && newestCached && Date.now() - newestCached < TAF_CACHE_MAX_AGE_MS) return tafs;
+      if (tafFetchPromise) return tafFetchPromise;
+      tafFetchState = { state:'updating', message:'Fetching TAFs from AviationWeather bulk cache through CodeTabs...' };
+      render();
+      tafFetchPromise = fetch(TAF_PROXY_URL, { cache:'no-store', headers:{ Accept:'application/gzip, application/xml, text/xml, text/plain' } })
+        .then(response => {
+          if (!response.ok) throw new Error(`TAF source returned HTTP ${response.status}`);
+          return decodeTafResponse(response);
+        })
+        .then(text => {
+          tafs = parseBulkTafXml(text);
+          save(STORAGE.tafs, tafs);
+          tafFetchState = { state:'updated', message:`TAF updated from AviationWeather bulk cache (${Object.keys(tafs).length} stations).` };
+          render();
+          return tafs;
+        })
+        .catch(error => {
+          tafFetchState = { state:'failed', message:`TAF update failed: ${error.message || error}` };
+          render();
+          throw error;
+        })
+        .finally(() => {
+          tafFetchPromise = null;
+        });
+      return tafFetchPromise;
+    }
+    function makeSyntheticMetar(id) {
+      const seed = id.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+      const dir = 180 + (seed % 120);
+      const speed = 6 + (seed % 12);
+      const temp = 26 + (seed % 15);
+      return {
+        wdir:dir, wspd:speed, wgst:speed > 12 ? speed + 6 : null, visib:10, temp, dewp:7, altim:29.92,
+        clouds:[{cover: seed % 3 === 0 ? 'BKN' : 'FEW', base: seed % 3 === 0 ? 3000 : 6000}],
+        raw:`${id} SAMPLE ${String(dir).padStart(3,'0')}${String(speed).padStart(2,'0')}KT 10SM FEW060 ${temp}/07 A2992 RMK SAMPLE DATA`
+      };
+    }
+    function parseVisibility(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    function ceiling(clouds) {
+      const bases = (clouds || []).filter(c => ['BKN','OVC','VV'].includes(c.cover) && c.base).map(c => c.base);
+      return bases.length ? Math.min(...bases) : null;
+    }
+    function category(metar) {
+      const vis = parseVisibility(metar.visib);
+      const cig = ceiling(metar.clouds);
+      if ((vis !== null && vis < 1) || (cig !== null && cig < 500)) return 'LIFR';
+      if ((vis !== null && vis < 3) || (cig !== null && cig < 1000)) return 'IFR';
+      if ((vis !== null && vis <= 5) || (cig !== null && cig <= 3000)) return 'MVFR';
+      return 'VFR';
+    }
+    function runwayCalc(wdir, wspd, runway) {
+      if (!Number.isFinite(wdir) || !Number.isFinite(wspd) || !runway) return null;
+      let diff = Math.abs(wdir - runway * 10) % 360;
+      if (diff > 180) diff = 360 - diff;
+      return { cross: Math.round(Math.abs(wspd * Math.sin(diff * Math.PI / 180))), head: Math.round(wspd * Math.cos(diff * Math.PI / 180)) };
+    }
+    function bestRunway(ap, wdir) {
+      const runways = ap.runways || [];
+      if (!runways.length || !Number.isFinite(wdir)) return runways[0] || '';
+      return runways.reduce((best, rw) => {
+        const diff = r => {
+          let d = Math.abs(wdir - r * 10) % 360;
+          return d > 180 ? 360 - d : d;
+        };
+        return diff(rw) < diff(best) ? rw : best;
+      }, runways[0]);
+    }
+    function densityAltitude(ap, metar) {
+      const pressureAlt = ap.elev + (29.92 - metar.altim) * 1000;
+      const isaTemp = 15 - (2 * (ap.elev / 1000));
+      return Math.round(pressureAlt + 120 * (metar.temp - isaTemp));
+    }
+    function windWarnings(ap, metar, runway) {
+      const maxWind = Math.max(Number(metar.wspd || 0), Number(metar.wgst || 0));
+      const cross = runwayCalc(metar.wdir, maxWind, runway)?.cross ?? 0;
+      const warnings = [];
+      if (maxWind > 15) warnings.push(`Student pilot solos are not allowed because total wind component ${maxWind} kt is over 15 kt.`);
+      if (cross > 10) warnings.push(`Student pilot solos are not allowed because Runway ${String(runway).padStart(2,'0')} crosswind component ${cross} kt is over 10 kt.`);
+      if (maxWind > Number(settings.defaultTotalLimit)) warnings.push(`Total wind component ${maxWind} kt is over the configured ${settings.defaultTotalLimit} kt limit.`);
+      if (cross > Number(settings.defaultCrossLimit)) warnings.push(`Crosswind component ${cross} kt is over the configured ${settings.defaultCrossLimit} kt limit.`);
+      if (ap.notes) {
+        if (/Dual Only/i.test(ap.notes)) warnings.push('Airport restriction: Dual Only.');
+        if (/No Night Flight/i.test(ap.notes)) warnings.push('Airport restriction: No Night Flight.');
+      }
+      return warnings;
+    }
+    function renderCard(id) {
+      const ap = airport(id);
+      if (!ap) return '';
+      const metar = metarFor(ap.id);
+      const cat = category(metar);
+      const runway = bestRunway(ap, metar.wdir);
+      const cross = runwayCalc(metar.wdir, Math.max(metar.wspd || 0, metar.wgst || 0), runway)?.cross ?? '—';
+      const da = densityAltitude(ap, metar);
+      const cig = ceiling(metar.clouds);
+      const warnings = windWarnings(ap, metar, runway);
+      const windValue = Math.max(metar.wspd || 0, metar.wgst || 0);
+      const windColor = windValue > 30 ? '#ff4d4d' : windValue > 20 ? '#c35d12' : windValue > 10 ? '#f5c84c' : '#38d66b';
+      return `
+        <article class="card" data-id="${ap.id}">
+          <header class="card-header">
+            <div>
+              <div class="icao-row"><span class="icao">${escapeHtml(publicAirportId(ap.id))}</span><span class="cat ${cat}">${cat}</span></div>
+              <div class="airport-name">${escapeHtml(ap.name)} · ${escapeHtml(ap.city)}, ${escapeHtml(ap.state)} · ${ap.elev} ft</div>
+            </div>
+            <button class="star" data-action="favorite" title="Toggle favorite">${favorites.includes(ap.id) ? '★' : '☆'}</button>
+            ${warnings.length ? `<div class="wind-warning"><div class="wind-warning-title">⚠ Wind / restriction warning</div><ul>${warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul></div>` : ''}
+          </header>
+          <div class="card-body">
+            <div class="visuals">
+              <div class="panel-box">
+                <div class="panel-head"><span class="panel-title">Wind</span></div>
+                <div class="compass"><span class="dir-label n">N</span><span class="dir-label e">E</span><span class="dir-label s">S</span><span class="dir-label w">W</span><span class="arrow" style="--rot:${((metar.wdir + 180) % 360) - 90}deg;--wind-arrow-color:${windColor}"></span></div>
+                <div class="wind-text">${String(metar.wdir).padStart(3,'0')}° @ ${metar.wspd}${metar.wgst ? 'G' + metar.wgst : ''} kt</div>
+                <div class="crosswind-text">Crosswind Rwy ${String(runway).padStart(2,'0')}: ${cross} kt</div>
+              </div>
+              <div class="panel-box">
+                <div class="panel-head"><span class="panel-title">Cloud Stack</span></div>
+                <div class="cloud-stack">${(metar.clouds || []).map(c => `<div class="cloud-layer"><span class="cloud-icon">${escapeHtml(c.cover)}</span><span>${escapeHtml(c.cover)} ${c.base ? String(Math.round(c.base / 100)).padStart(3,'0') : '///'}</span></div>`).join('')}</div>
+              </div>
+            </div>
+            <div class="data-grid">
+              <div class="datum"><div class="label">Visibility</div><div class="value">${metar.visib} SM</div></div>
+              <div class="datum ${cig && cig <= 3000 ? 'warning' : ''}"><div class="label">Ceiling</div><div class="value">${cig ? cig.toLocaleString() + ' ft AGL' : 'No ceiling'}</div></div>
+              <div class="datum ${metar.temp > settings.hotTempLimit ? 'warning' : ''}"><div class="label">Temp / Dewpoint</div><div class="value">${metar.temp}°C / ${metar.dewp}°C</div></div>
+              <div class="datum"><div class="label">Altimeter</div><div class="value">${metar.altim.toFixed(2)} inHg</div></div>
+              <div class="datum"><div class="label">Density Altitude</div><div class="value">${da.toLocaleString()} ft</div></div>
+              <div class="datum"><div class="label">Observed</div><div class="value">Sample / Test</div></div>
+            </div>
+            <details class="raw"><summary>Raw METAR</summary><pre class="raw-text-block">${escapeHtml(metar.raw)}</pre></details>
+            <details class="raw"><summary>${escapeHtml(tafSummaryFor(ap.id))}</summary><pre class="raw-text-block">${escapeHtml(tafFor(ap.id)?.raw || tafFetchState.message || 'TAF not loaded yet.')}</pre></details>
+          </div>
+        </article>`;
+    }
+    function visibleIdsForSet(value) {
+      if (value === 'favorites') return favorites.length ? favorites : ['KIWA'];
+      if (value === 'mesa') return ['KIWA','KFFZ','KCHD','KSDL','KPHX'];
+      if (value === 'practice') return ['KIWA','A39','KCGZ','P08','KAVQ','KRYN','KTUS'];
+      if (value === 'az') return DEFAULT_AIRPORTS.filter(a => a.state === 'AZ').map(a => a.id);
+      return ['KIWA'];
+    }
+    function render() {
+      $('boardTitleText').textContent = settings.boardTitle || 'SOF SafeFlight Advisor';
+      document.title = `${settings.boardTitle || 'SOF SafeFlight Advisor'} ${APP_VERSION}`;
+      selected = selected.filter(id => airport(id));
+      if (!selected.length) selected = ['KIWA'];
+      save(STORAGE.selected, selected);
+      const width = settings.cardColumns === '5' ? '260' : settings.cardColumns === '4' ? '300' : '390';
+      $('cards').style.gridTemplateColumns = `repeat(auto-fill, minmax(${width}px, 1fr))`;
+      $('cards').innerHTML = selected.map(renderCard).join('');
+      buildSelects();
+      renderChanges();
+      renderSoloMap();
+    }
+    function buildSelects() {
+      const state = new Set(['ALL', ...DEFAULT_AIRPORTS.map(a => a.state)]);
+      if (!$('stateTabs').children.length) {
+        $('stateTabs').innerHTML = [...state].map(st => `<button class="tab ${st === 'ALL' ? 'active' : ''}" data-state="${st}">${st === 'ALL' ? 'All SW' : st}</button>`).join('');
+        $('stateTabs').querySelectorAll('.tab').forEach(btn => btn.onclick = () => {
+          $('stateTabs').querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === btn));
+          fillAirportSelect(btn.dataset.state);
+        });
+      }
+      fillAirportSelect(document.querySelector('.tab.active')?.dataset.state || 'ALL');
+      $('testAirportId').innerHTML = DEFAULT_AIRPORTS.map(a => `<option value="${a.id}">${publicAirportId(a.id)} — ${escapeHtml(a.name)}</option>`).join('');
+    }
+    function fillAirportSelect(state) {
+      const list = DEFAULT_AIRPORTS.filter(a => state === 'ALL' || a.state === state);
+      $('airportSelect').innerHTML = `<option value="">Select airport...</option>` + list.map(a => `<option value="${a.id}">${publicAirportId(a.id)} — ${escapeHtml(a.name)} (${a.city}, ${a.state})</option>`).join('');
+    }
+    function renderChanges() {
+      const log = load(STORAGE.changeLog, DEFAULT_CHANGELOG);
+      $('changeList').innerHTML = log.sort((a,b) => Date.parse(b.ts) - Date.parse(a.ts)).map(item => `<div class="change-row"><div class="change-stamp">${new Date(item.ts).toLocaleString()}</div><div>${escapeHtml(item.summary)}</div></div>`).join('');
+    }
+    function openSettings() {
+      $('boardTitleInput').value = settings.boardTitle;
+      $('autoRefresh').value = settings.autoRefresh;
+      $('cardColumns').value = settings.cardColumns;
+      $('defaultTotalLimit').value = settings.defaultTotalLimit;
+      $('defaultCrossLimit').value = settings.defaultCrossLimit;
+      $('hotTempLimit').value = settings.hotTempLimit;
+      $('restrictionNotes').value = settings.restrictionNotes;
+      $('settingsBackdrop').classList.add('open');
+    }
+    function persistSettings() {
+      settings.boardTitle = $('boardTitleInput').value.trim() || 'SOF SafeFlight Advisor';
+      settings.autoRefresh = $('autoRefresh').value;
+      settings.cardColumns = $('cardColumns').value;
+      settings.defaultTotalLimit = Number($('defaultTotalLimit').value || 5);
+      settings.defaultCrossLimit = Number($('defaultCrossLimit').value || 5);
+      settings.hotTempLimit = Number($('hotTempLimit').value || 40);
+      settings.restrictionNotes = $('restrictionNotes').value.trim();
+      save(STORAGE.settings, settings);
+      render();
+    }
+    function applyTestData() {
+      const id = $('testAirportId').value;
+      const windDir = Number($('testWindDir').value || 240);
+      const windSpeed = Number($('testWindSpeed').value || 0);
+      const gust = $('testWindGust').value === '' ? null : Number($('testWindGust').value);
+      const vis = Number($('testVisibility').value || 10);
+      const temp = Number($('testTemp').value || 20);
+      const ceilingValue = Number($('testCeiling').value || 0);
+      testMetars[id] = {
+        wdir:windDir, wspd:windSpeed, wgst:gust, visib:vis, temp, dewp:8, altim:29.92,
+        clouds: ceilingValue ? [{cover:'BKN', base:ceilingValue}] : [{cover:'CLR', base:null}],
+        raw:`${id} TEST ${String(windDir).padStart(3,'0')}${String(windSpeed).padStart(2,'0')}${gust ? 'G' + String(gust).padStart(2,'0') : ''}KT ${vis}SM ${ceilingValue ? 'BKN' + String(Math.round(ceilingValue / 100)).padStart(3,'0') : 'CLR'} ${temp}/08 A2992 RMK TEST DATA`
+      };
+      save(STORAGE.testMetars, testMetars);
+      selected = [id, ...selected.filter(x => x !== id)];
+      save(STORAGE.selected, selected);
+      render();
+      toast(`Applied test data for ${publicAirportId(id)}.`);
+    }
+    function clearTestData() {
+      testMetars = {};
+      save(STORAGE.testMetars, testMetars);
+      render();
+      toast('Test METAR data cleared.');
+    }
+    function renderSoloStatus() {
+      const total = Number($('soloTotalLimit').value || settings.defaultTotalLimit || 5);
+      const crossLimit = Number($('soloCrosswindLimit').value || settings.defaultCrossLimit || 5);
+      const points = [
+        { role:'Dep.', id:$('soloDep').value || 'KIWA', time:$('soloDepTime').value },
+        { role:'Leg', id:$('soloLeg').value, time:$('soloLegTime').value },
+        { role:'Arr.', id:$('soloArr').value, time:$('soloArrTime').value }
+      ].filter(p => cleanId(p.id));
+      $('soloStatusList').innerHTML = points.map(point => {
+        const ap = airport(point.id);
+        if (!ap) return `<li class="solo-status-item bad"><strong>${escapeHtml(point.role)}</strong> ${escapeHtml(point.id)} is not in the airport list.</li>`;
+        const metar = metarFor(ap.id);
+        const rw = bestRunway(ap, metar.wdir);
+        const maxWind = Math.max(metar.wspd || 0, metar.wgst || 0);
+        const xw = runwayCalc(metar.wdir, maxWind, rw)?.cross ?? 0;
+        const reasons = [];
+        if (maxWind > total) reasons.push(`Total wind ${maxWind} kt is over ${total} kt.`);
+        if (xw > crossLimit) reasons.push(`Crosswind ${xw} kt is over ${crossLimit} kt.`);
+        if (/Dual Only/i.test(ap.notes)) reasons.push('Dual Only airport.');
+        if (/No Night Flight/i.test(ap.notes)) reasons.push('No Night Flight airport.');
+        return `<li class="solo-status-item ${reasons.length ? 'bad' : ''}"><strong>${escapeHtml(point.role)} · ${publicAirportId(ap.id)}</strong><div>${String(metar.wdir).padStart(3,'0')}° @ ${maxWind} kt · Rwy ${String(rw).padStart(2,'0')} crosswind ${xw} kt${point.time ? ' · ' + escapeHtml(point.time) + ' local' : ''}</div>${reasons.length ? `<ul>${reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>` : '<div>Within configured wind limits.</div>'}</li>`;
+      }).join('');
+      renderSoloMap();
+    }
+    function mapPosition(ap) {
+      const lons = DEFAULT_AIRPORTS.map(a => a.lon);
+      const lats = DEFAULT_AIRPORTS.map(a => a.lat);
+      const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+      const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+      return { x: 8 + ((ap.lon - minLon) / (maxLon - minLon || 1)) * 84, y: 88 - ((ap.lat - minLat) / (maxLat - minLat || 1)) * 76 };
+    }
+    function renderSoloMap() {
+      const map = $('soloMap');
+      if (!map) return;
+      const routeIds = [cleanId($('soloDep')?.value || 'KIWA'), cleanId($('soloLeg')?.value || ''), cleanId($('soloArr')?.value || '')].filter(Boolean);
+      map.innerHTML = DEFAULT_AIRPORTS.map(ap => {
+        const pos = mapPosition(ap);
+        return `<span class="map-dot ${routeIds.includes(ap.id) || routeIds.includes(publicAirportId(ap.id)) ? 'route' : ''}" style="left:${pos.x}%;top:${pos.y}%" title="${escapeHtml(ap.name)}">${publicAirportId(ap.id)}</span>`;
+      }).join('');
+      const routePoints = routeIds.map(id => airport(id)).filter(Boolean).map(mapPosition);
+      for (let i = 0; i < routePoints.length - 1; i += 1) {
+        const a = routePoints[i], b = routePoints[i + 1];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len = Math.hypot(dx, dy);
+        const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+        const line = document.createElement('span');
+        line.className = 'route-line';
+        line.style.left = `${a.x}%`;
+        line.style.top = `${a.y}%`;
+        line.style.width = `${len}%`;
+        line.style.transform = `rotate(${ang}deg)`;
+        map.appendChild(line);
+      }
+    }
+    function openSolo() {
+      $('soloTotalLimit').value = settings.defaultTotalLimit || 5;
+      $('soloCrosswindLimit').value = settings.defaultCrossLimit || 5;
+      $('soloDep').value = selected[0] || 'KIWA';
+      $('soloLeg').value = 'A39';
+      $('soloArr').value = 'KCGZ';
+      $('soloOverlay').classList.add('open');
+      $('soloOverlay').setAttribute('aria-hidden', 'false');
+      renderSoloStatus();
+    }
+    $('airportSelect').addEventListener('change', event => {
+      const id = event.target.value;
+      if (!id) return;
+      selected = [id, ...selected.filter(x => x !== id)];
+      save(STORAGE.selected, selected);
+      event.target.value = '';
+      render();
+      updateTafs(false).catch(error => toast(error.message || 'TAF update failed.'));
+    });
+    $('initialSet').addEventListener('change', event => {
+      selected = visibleIdsForSet(event.target.value);
+      save(STORAGE.selected, selected);
+      render();
+      updateTafs(false).catch(error => toast(error.message || 'TAF update failed.'));
+    });
+    $('cards').addEventListener('click', event => {
+      const star = event.target.closest('[data-action="favorite"]');
+      if (!star) return;
+      const id = star.closest('.card').dataset.id;
+      favorites = favorites.includes(id) ? favorites.filter(x => x !== id) : [id, ...favorites];
+      save(STORAGE.favorites, favorites);
+      render();
+    });
+    $('settingsBtn').addEventListener('click', openSettings);
+    $('closeSettingsBtn').addEventListener('click', () => $('settingsBackdrop').classList.remove('open'));
+    $('settingsBackdrop').addEventListener('click', event => { if (event.target === $('settingsBackdrop')) $('settingsBackdrop').classList.remove('open'); });
+    ['boardTitleInput','autoRefresh','cardColumns','defaultTotalLimit','defaultCrossLimit','hotTempLimit','restrictionNotes'].forEach(id => $(id).addEventListener('change', persistSettings));
+    $('applyTestDataBtn').addEventListener('click', applyTestData);
+    $('clearTestDataBtn').addEventListener('click', clearTestData);
+    $('soloBtn').addEventListener('click', openSolo);
+    $('closeSoloBtn').addEventListener('click', () => $('soloOverlay').classList.remove('open'));
+    $('clearSoloBtn').addEventListener('click', () => { ['soloDep','soloDepTime','soloLeg','soloLegTime','soloArr','soloArrTime'].forEach(id => $(id).value = ''); renderSoloStatus(); });
+    $('updateSoloBtn').addEventListener('click', () => {
+      updateTafs(true)
+        .then(() => toast('TAF updated from AviationWeather bulk cache.'))
+        .catch(error => toast(error.message || 'TAF update failed.'))
+        .finally(renderSoloStatus);
+    });
+    ['soloTotalLimit','soloCrosswindLimit','soloDep','soloLeg','soloArr','soloDepTime','soloLegTime','soloArrTime'].forEach(id => $(id).addEventListener('input', renderSoloStatus));
+    document.querySelectorAll('.solo-mode-btn').forEach(btn => btn.addEventListener('click', () => {
+      document.querySelectorAll('.solo-mode-btn').forEach(b => b.classList.toggle('active', b === btn));
+      renderSoloStatus();
+    }));
+    $('closeStartupDisclaimerBtn').addEventListener('click', () => $('startupDisclaimer').classList.remove('open'));
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        $('settingsBackdrop').classList.remove('open');
+        $('soloOverlay').classList.remove('open');
+        $('startupDisclaimer').classList.remove('open');
+      }
+    });
+    render();
+    updateTafs(false).catch(error => toast(error.message || 'TAF update failed.'));
+  </script>
 </body>
-
 </html>
