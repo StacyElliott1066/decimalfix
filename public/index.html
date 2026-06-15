@@ -495,7 +495,8 @@
       favorites: 'swawb.approved8_6.favorites',
       settings: 'swawb.approved8_6.settings.v8_multi_source_metar',
       changeLog: 'swawb.approved8_6.change_log.v1',
-      testMetars: 'swawb.approved8_6.test_metars.v1'
+      testMetars: 'swawb.approved8_6.test_metars.v1',
+      tafs: 'swawb.approved8_6.taf_cache.v1'
     };
     const DEFAULT_AIRPORTS = [
       { id:'KIWA', name:'Phoenix-Mesa Gateway', city:'Mesa', state:'AZ', elev:1382, runways:[12,30], lat:33.3078, lon:-111.6555, notes:'' },
@@ -550,6 +551,12 @@
     let selected = load(STORAGE.selected, ['KIWA']);
     let favorites = load(STORAGE.favorites, ['KIWA']);
     let testMetars = load(STORAGE.testMetars, {});
+    let tafs = load(STORAGE.tafs, {});
+    let tafFetchPromise = null;
+    let tafFetchState = { state: Object.keys(tafs || {}).length ? 'cached' : 'idle', message: Object.keys(tafs || {}).length ? 'Cached TAF loaded' : 'TAF not loaded yet' };
+    const TAF_BULK_URL = 'https://aviationweather.gov/data/cache/tafs.cache.xml.gz';
+    const TAF_PROXY_URL = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(TAF_BULK_URL)}`;
+    const TAF_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
     function toast(message) {
       const node = $('toast');
       node.textContent = message;
@@ -560,6 +567,113 @@
     function metarFor(id) {
       const clean = airport(id)?.id || publicAirportId(id);
       return testMetars[clean] || SAMPLE_METARS[clean] || makeSyntheticMetar(clean);
+    }
+    function weatherSourceStationId(id) {
+      const publicId = publicAirportId(id);
+      return /^[A-Z0-9]{3}$/.test(publicId) && /[A-Z]/.test(publicId) && /\d/.test(publicId) ? `K${publicId}` : publicId;
+    }
+    function tafFor(id) {
+      const ap = airport(id);
+      const candidates = [
+        ap?.id,
+        weatherSourceStationId(ap?.id || id),
+        publicAirportId(ap?.id || id),
+        cleanId(id)
+      ].filter(Boolean);
+      for (const candidate of candidates) {
+        if (tafs[candidate]) return tafs[candidate];
+      }
+      return null;
+    }
+    function tafSummaryFor(id) {
+      const taf = tafFor(id);
+      if (taf) {
+        const when = taf.fetchedAt ? new Date(taf.fetchedAt).toLocaleString([], { hour:'2-digit', minute:'2-digit', hour12:false, month:'short', day:'numeric' }) : 'cached';
+        return `Raw TAF · ${when}`;
+      }
+      if (tafFetchState.state === 'updating') return 'Raw TAF · Updating from AviationWeather';
+      if (tafFetchState.state === 'failed') return 'Raw TAF · Unavailable';
+      return 'Raw TAF · Not loaded yet';
+    }
+    function directXmlChildText(node, childName) {
+      const wanted = String(childName || '').toLowerCase();
+      for (const child of Array.from(node?.children || [])) {
+        if (String(child.localName || child.nodeName || '').toLowerCase() === wanted) {
+          return String(child.textContent || '').trim();
+        }
+      }
+      return '';
+    }
+    async function decodeTafResponse(response) {
+      const buffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const isGzip = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+      if (isGzip) {
+        if (typeof DecompressionStream !== 'function') {
+          throw new Error('This browser cannot decompress the AviationWeather TAF gzip cache.');
+        }
+        const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'));
+        return new Response(stream).text();
+      }
+      const text = new TextDecoder('utf-8').decode(buffer);
+      try {
+        const json = JSON.parse(text);
+        const possible = json.contents || json.content || json.body || json.data;
+        if (typeof possible === 'string') return possible;
+      } catch {}
+      return text;
+    }
+    function parseBulkTafXml(xmlText) {
+      const doc = new DOMParser().parseFromString(String(xmlText || ''), 'application/xml');
+      if (doc.getElementsByTagName('parsererror').length) {
+        throw new Error('AviationWeather bulk TAF XML could not be parsed.');
+      }
+      const rows = Array.from(doc.getElementsByTagName('*')).filter(node => String(node.localName || node.nodeName || '').toUpperCase() === 'TAF');
+      const next = {};
+      rows.forEach(node => {
+        const station = cleanId(directXmlChildText(node, 'station_id'));
+        const raw = directXmlChildText(node, 'raw_text');
+        if (!station || !raw) return;
+        next[station] = {
+          station,
+          raw,
+          issueTime: directXmlChildText(node, 'issue_time'),
+          validFrom: directXmlChildText(node, 'valid_time_from'),
+          validTo: directXmlChildText(node, 'valid_time_to'),
+          source: TAF_BULK_URL,
+          fetchedAt: new Date().toISOString()
+        };
+      });
+      if (!Object.keys(next).length) throw new Error('AviationWeather bulk TAF XML did not contain any TAF records.');
+      return next;
+    }
+    async function updateTafs(force = false) {
+      const newestCached = Math.max(0, ...Object.values(tafs || {}).map(item => Date.parse(item.fetchedAt || 0) || 0));
+      if (!force && newestCached && Date.now() - newestCached < TAF_CACHE_MAX_AGE_MS) return tafs;
+      if (tafFetchPromise) return tafFetchPromise;
+      tafFetchState = { state:'updating', message:'Fetching TAFs from AviationWeather bulk cache through CodeTabs...' };
+      render();
+      tafFetchPromise = fetch(TAF_PROXY_URL, { cache:'no-store', headers:{ Accept:'application/gzip, application/xml, text/xml, text/plain' } })
+        .then(response => {
+          if (!response.ok) throw new Error(`TAF source returned HTTP ${response.status}`);
+          return decodeTafResponse(response);
+        })
+        .then(text => {
+          tafs = parseBulkTafXml(text);
+          save(STORAGE.tafs, tafs);
+          tafFetchState = { state:'updated', message:`TAF updated from AviationWeather bulk cache (${Object.keys(tafs).length} stations).` };
+          render();
+          return tafs;
+        })
+        .catch(error => {
+          tafFetchState = { state:'failed', message:`TAF update failed: ${error.message || error}` };
+          render();
+          throw error;
+        })
+        .finally(() => {
+          tafFetchPromise = null;
+        });
+      return tafFetchPromise;
     }
     function makeSyntheticMetar(id) {
       const seed = id.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
@@ -668,6 +782,7 @@
               <div class="datum"><div class="label">Observed</div><div class="value">Sample / Test</div></div>
             </div>
             <details class="raw"><summary>Raw METAR</summary><pre class="raw-text-block">${escapeHtml(metar.raw)}</pre></details>
+            <details class="raw"><summary>${escapeHtml(tafSummaryFor(ap.id))}</summary><pre class="raw-text-block">${escapeHtml(tafFor(ap.id)?.raw || tafFetchState.message || 'TAF not loaded yet.')}</pre></details>
           </div>
         </article>`;
     }
@@ -828,11 +943,13 @@
       save(STORAGE.selected, selected);
       event.target.value = '';
       render();
+      updateTafs(false).catch(error => toast(error.message || 'TAF update failed.'));
     });
     $('initialSet').addEventListener('change', event => {
       selected = visibleIdsForSet(event.target.value);
       save(STORAGE.selected, selected);
       render();
+      updateTafs(false).catch(error => toast(error.message || 'TAF update failed.'));
     });
     $('cards').addEventListener('click', event => {
       const star = event.target.closest('[data-action="favorite"]');
@@ -851,7 +968,12 @@
     $('soloBtn').addEventListener('click', openSolo);
     $('closeSoloBtn').addEventListener('click', () => $('soloOverlay').classList.remove('open'));
     $('clearSoloBtn').addEventListener('click', () => { ['soloDep','soloDepTime','soloLeg','soloLegTime','soloArr','soloArrTime'].forEach(id => $(id).value = ''); renderSoloStatus(); });
-    $('updateSoloBtn').addEventListener('click', () => { renderSoloStatus(); toast('Route Advisor data updated from local sample/test weather.'); });
+    $('updateSoloBtn').addEventListener('click', () => {
+      updateTafs(true)
+        .then(() => toast('TAF updated from AviationWeather bulk cache.'))
+        .catch(error => toast(error.message || 'TAF update failed.'))
+        .finally(renderSoloStatus);
+    });
     ['soloTotalLimit','soloCrosswindLimit','soloDep','soloLeg','soloArr','soloDepTime','soloLegTime','soloArrTime'].forEach(id => $(id).addEventListener('input', renderSoloStatus));
     document.querySelectorAll('.solo-mode-btn').forEach(btn => btn.addEventListener('click', () => {
       document.querySelectorAll('.solo-mode-btn').forEach(b => b.classList.toggle('active', b === btn));
@@ -866,6 +988,7 @@
       }
     });
     render();
+    updateTafs(false).catch(error => toast(error.message || 'TAF update failed.'));
   </script>
 </body>
 </html>
